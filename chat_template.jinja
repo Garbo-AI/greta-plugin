@@ -1,0 +1,275 @@
+{%- if enable_thinking is not defined %}
+    {%- set enable_thinking = true %}
+{%- endif %}
+{%- if keep_reasoning_in_history is not defined %}
+    {%- set keep_reasoning_in_history = true %}
+{%- endif %}
+
+{#- Flatten a string / dict / list-of-parts content field into plain text. -#}
+{%- macro render_content(content) -%}
+    {%- if content is string -%}
+        {{- content -}}
+    {%- elif content is mapping -%}
+        {{- content.text if content.text is defined else content | tojson -}}
+    {%- elif content is sequence -%}
+        {%- for part in content -%}
+            {%- if part is string -%}
+                {{- part -}}
+            {%- elif part is mapping and (part.type is not defined or part.type == 'text') -%}
+                {{- part.text if part.text is defined else '' -}}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- elif content is not none -%}
+        {{- content | tojson -}}
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_properties(properties) -%}
+    {%- for pname, p in properties.items() -%}
+        {{- '<|tool:param|><|tool:param:name|>' + pname | trim -}}
+        {%- if p.type is defined and p.type is string -%}
+            {{- '<|tool:param:type|>' + p.type | trim -}}
+        {%- endif -%}
+        {%- if p.description is defined and p.description is string -%}
+            {{- '<|tool:param:description|>' + p.description | trim -}}
+        {%- endif -%}
+        {%- if p.enum is defined and p.enum is sequence and p.enum is not string and p.enum is not mapping -%}
+            {{- '<|tool:param:enum|>' + (p.enum | tojson) -}}
+        {%- endif -%}
+    {%- endfor -%}
+{%- endmacro -%}
+
+{%- macro render_param_groups(groups, marker) -%}
+    {%- set acc = namespace(text='') -%}
+    {%- for pg in groups -%}
+        {%- if pg.properties is defined and pg.properties is mapping -%}
+            {%- set acc.text = acc.text ~ '<|tool:params:group|>' ~ render_properties(pg.properties) -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {%- if acc.text -%}
+        {{- marker + acc.text -}}
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_tool_def(entry) -%}
+    {%- if entry.type is defined and entry.type == 'function' -%}
+        {%- set fn = entry.function if entry.function is defined else entry -%}
+        {%- if fn.name is defined and fn.name -%}
+            {{- '<|tool:definition|><|tool:name|>' + fn.name | trim -}}
+            {%- if fn.description is defined and fn.description is string -%}
+                {{- '<|tool:description|>' + fn.description | trim -}}
+            {%- endif -%}
+            {%- if fn.strict is defined and fn.strict is boolean -%}
+                {{- '<|tool:strict|>' + ('true' if fn.strict else 'false') -}}
+            {%- endif -%}
+            {%- set params = fn.parameters if fn.parameters is defined else none -%}
+            {%- if params is mapping and params -%}
+                {%- set has_props = params.properties is defined and params.properties is mapping -%}
+                {%- set has_oneof = params.oneOf is defined and params.oneOf is sequence
+                                    and params.oneOf is not string and params.oneOf | length > 0 -%}
+                {%- set has_anyof = params.anyOf is defined and params.anyOf is sequence
+                                    and params.anyOf is not string and params.anyOf | length > 0 -%}
+                {%- if has_props or has_oneof or has_anyof -%}
+                    {{- '<|tool:params|>' -}}
+                    {%- if params.type is defined and params.type is string -%}
+                        {{- '<|tool:params:type|>' + params.type | trim -}}
+                    {%- endif -%}
+                    {%- if has_props -%}
+                        {{- render_properties(params.properties) -}}
+                    {%- elif has_oneof -%}
+                        {{- render_param_groups(params.oneOf, '<|tool:params:oneof|>') -}}
+                    {%- else -%}
+                        {{- render_param_groups(params.anyOf, '<|tool:params:anyof|>') -}}
+                    {%- endif -%}
+                {%- endif -%}
+                {%- if params.required is defined and params.required is sequence and params.required is not string -%}
+                    {{- '<|tool:params:required|>' + (params.required | tojson) -}}
+                {%- endif -%}
+            {%- endif -%}
+            {{- '<|eot|>' -}}
+        {%- endif -%}
+    {%- endif -%}
+{%- endmacro -%}
+
+{#- One <|tool:call|> section of an assistant round; the round's <|ai|> and <|eot|> are written by the caller. -#}
+{%- macro render_tool_call(call) -%}
+    {%- set fn = call.function if call.function is defined else call -%}
+    {%- if fn.name is not defined or not fn.name -%}
+        {{- raise_exception('Tool call is missing a name: ' + (call | tojson)) -}}
+    {%- endif -%}
+    {%- set args = fn.arguments if fn.arguments is defined else (fn.parameters if fn.parameters is defined else none) -%}
+    {%- if args is string -%}
+        {{- raise_exception('Tool call arguments for "' + fn.name + '" arrived as a JSON string. This template needs a dict; json.loads them before calling apply_chat_template.') -}}
+    {%- endif -%}
+    {%- if args is not mapping -%}
+        {{- raise_exception('Tool call arguments for "' + fn.name + '" must be a dict.') -}}
+    {%- endif -%}
+    {{- '<|tool:call|><|tool:name|>' + fn.name | trim -}}
+    {#- <|tool:id|> is not a special token and never appears in SFT data; ids are regenerated by the tool parser. -#}
+    {{- '<|tool:params|>' -}}
+    {%- for aname, avalue in args.items() -%}
+        {{- '<|tool:param|><|tool:param:name|>' + aname | trim -}}
+        {%- if avalue is string -%}
+            {{- '<|tool:param:value|>' + avalue | trim -}}
+        {%- else -%}
+            {{- '<|tool:param:value|>' + (avalue | tojson) -}}
+        {%- endif -%}
+    {%- endfor -%}
+{%- endmacro -%}
+
+{%- macro render_tool_response(name, content) -%}
+    {{- '<|tool:response|><|tool:name|>' + name | trim -}}
+    {%- if content is string -%}
+        {{- '<|tool:result|>' + content | trim -}}
+    {%- else -%}
+        {{- '<|tool:result|>' + (content | tojson) -}}
+    {%- endif -%}
+    {{- '<|eot|>' -}}
+{%- endmacro -%}
+
+{#-
+    Turn taking (same as format_data.apply_template): <|eot|> ends a turn and hands over. Every system, user,
+    document, policy and tool-result message is its own turn. Consecutive assistant/think messages form ONE
+    assistant round, <|ai|><|think|>…<|text|>…<|tool:call|>…<|tool:call|>…<|eot|>, so all calls of a round can
+    run in parallel. After a round with calls the tool results follow, otherwise the user.
+-#}
+{%- set ns = namespace(tools=none, tools_written=false, in_round=false, pending=[], used=0) %}
+{{- '<|bos|>' }}
+{%- if tools is defined and tools %}
+    {%- set ns.tools = tools %}
+{%- endif %}
+{%- if not ns.tools %}
+    {%- for m in messages %}
+        {%- if m.role == 'tools' and m.content is defined and m.content and m.content is not string %}
+            {%- set ns.tools = m.content %}
+        {%- endif %}
+    {%- endfor %}
+{%- endif %}
+
+{#- Tool definitions go first without a system message, otherwise right after the first one. -#}
+{%- set has_system = namespace(found=false) %}
+{%- for m in messages %}
+    {%- if m.role in ['system', 'developer'] %}
+        {%- set has_system.found = true %}
+    {%- endif %}
+{%- endfor %}
+{%- if ns.tools and not has_system.found %}
+    {%- for entry in ns.tools %}
+        {{- render_tool_def(entry) }}
+    {%- endfor %}
+    {%- set ns.tools_written = true %}
+{%- endif %}
+
+{%- for message in messages %}
+    {%- set role = message.role %}
+    {%- set text = render_content(message.content) | trim %}
+
+    {%- if role in ['assistant', 'ai', 'think'] %}
+        {%- set reasoning = '' %}
+        {%- if role == 'think' %}
+            {%- set reasoning = text %}
+            {%- set text = '' %}
+        {%- elif message.reasoning_content is defined and message.reasoning_content %}
+            {%- set reasoning = render_content(message.reasoning_content) | trim %}
+        {%- elif message.reasoning is defined and message.reasoning %}
+            {%- set reasoning = render_content(message.reasoning) | trim %}
+        {%- elif message.thinking is defined and message.thinking %}
+            {%- set reasoning = render_content(message.thinking) | trim %}
+        {%- endif %}
+        {%- set calls = message.tool_calls if message.tool_calls is defined and message.tool_calls else [] %}
+        {%- set show_reasoning = reasoning and (keep_reasoning_in_history or loop.last) %}
+        {%- if show_reasoning or text or calls %}
+            {%- if not ns.in_round %}
+                {{- '<|ai|>' }}
+                {%- set ns.in_round = true %}
+            {%- endif %}
+            {%- if show_reasoning %}
+                {{- '<|think|>' + reasoning }}
+            {%- endif %}
+            {%- if text %}
+                {{- '<|text|>' + text }}
+            {%- endif %}
+            {%- for call in calls %}
+                {{- render_tool_call(call) }}
+                {%- set fn = call.function if call.function is defined else call %}
+                {%- set ns.pending = ns.pending + [fn.name] %}
+            {%- endfor %}
+        {%- endif %}
+
+    {%- elif role == 'tools' %}
+        {#- Tools already rendered. -#}
+
+    {%- else %}
+        {%- if ns.in_round %}
+            {{- '<|eot|>' }}
+            {%- set ns.in_round = false %}
+        {%- endif %}
+
+        {%- if role == 'system' or role == 'developer' %}
+            {{- '<|system|>' + text + '<|eot|>' }}
+            {%- if ns.tools and not ns.tools_written %}
+                {%- for entry in ns.tools %}
+                    {{- render_tool_def(entry) }}
+                {%- endfor %}
+                {%- set ns.tools_written = true %}
+            {%- endif %}
+
+        {%- elif role == 'user' or role == 'human' %}
+            {{- '<|human|>' + text + '<|eot|>' }}
+            {%- set ns.pending = [] %}
+            {%- set ns.used = 0 %}
+
+        {%- elif role == 'policy' or role == 'schema' %}
+            {{- '<|policy|>' + text + '<|eot|>' }}
+
+        {%- elif role == 'document' %}
+            {{- '<|document|>' + text + '<|eot|>' }}
+
+        {%- elif role == 'tool' or role == 'function' %}
+            {%- set idx = loop.index0 %}
+            {%- set call_id = message.tool_call_id if message.tool_call_id is defined else (message.id if message.id is defined else '') %}
+            {%- set found = namespace(name='') %}
+            {%- if message.name is defined and message.name %}
+                {%- set found.name = message.name %}
+            {%- elif message.tool_name is defined and message.tool_name %}
+                {%- set found.name = message.tool_name %}
+            {%- elif call_id %}
+                {#- OpenAI omits the name on tool results: recover it from the matching call -#}
+                {%- for prev in messages[:idx] %}
+                    {%- if prev.tool_calls is defined and prev.tool_calls %}
+                        {%- for tc in prev.tool_calls %}
+                            {%- if tc.id is defined and tc.id == call_id %}
+                                {%- set found.name = tc.function.name if tc.function is defined else tc.name %}
+                            {%- endif %}
+                        {%- endfor %}
+                    {%- endif %}
+                {%- endfor %}
+            {%- endif %}
+            {%- if not found.name and ns.used < ns.pending | length %}
+                {#- Otherwise the next call still waiting for a result, in call order. -#}
+                {%- set found.name = ns.pending[ns.used] %}
+            {%- endif %}
+            {%- if not found.name %}
+                {{- raise_exception('Tool result at index ' + idx | string + ' has no name, no resolvable tool_call_id and no pending call.') }}
+            {%- endif %}
+            {%- set ns.used = ns.used + 1 %}
+            {{- render_tool_response(found.name, message.content) }}
+
+        {%- else %}
+            {{- raise_exception('Unsupported role: ' ~ role) }}
+        {%- endif %}
+    {%- endif %}
+{%- endfor %}
+
+{%- if ns.in_round %}
+    {{- '<|eot|>' }}
+{%- endif %}
+
+{%- if add_generation_prompt %}
+    {{- '<|ai|>' }}
+    {%- if enable_thinking %}
+        {{- '<|think|>' }}
+    {%- else %}
+        {{- '<|text|>' }}
+    {%- endif %}
+{%- endif -%}

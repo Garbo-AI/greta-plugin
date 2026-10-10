@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=77,<81"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "greta-vllm"
+version = "0.1.0"
+description = "Native vLLM 0.30.0 inference adapter for Greta"
+requires-python = ">=3.10"
+dependencies = ["vllm==0.30.0", "transformers==5.17.0", "einops"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.entry-points."vllm.general_plugins"]
+greta = "greta_vllm:register"
+
+[tool.setuptools.packages.find]
+include = ["greta", "greta_vllm"]
+
+[tool.setuptools.package-data]
+greta_vllm = ["*.jinja", "*.json"]
+
+[tool.pytest.ini_options]
+markers = ["gpu: requires a supported CUDA GPU and a full vLLM installation"]
