@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Packaging / build output
+build/
+dist/
+*.egg-info/
+.eggs/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+
+# Test and tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local backups of edited assets
+*.bak
+*.orig
+*.pre-tool-patch
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Tests are kept local for now
+tests/
